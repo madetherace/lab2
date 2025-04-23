@@ -1,0 +1,12 @@
+0.0 0.0   5.0 0.0   2.5 4.33   # Equilateral (approx)
+1 1 6 1 1 6                  # Isosceles
+0 0 3 0 0 4                  # Right-Angled
+1 1 2 3 4 1                  # Scalene
+0 0 1 1 2 2                  # Invalid - Collinear points
+10 10 20 20 30 30            # Invalid - Collinear points
+5 5 15 5 10 13.66            # Equilateral (approx)
+0 0 4 0 0 3                  # Right-Angled (same as above but different order)
+-1 -1 1 -1 0 0.732           # Isosceles
+-2 5 8 1 3 -6                # Scalene
+invalid data here            # Invalid - Non-numeric
+1 2 3 4 5                    # Invalid - Wrong number of coordinates
