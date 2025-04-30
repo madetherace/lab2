@@ -4,38 +4,52 @@ import com.example.triangle.entity.Triangle;
 import com.example.triangle.exception.TriangleException;
 import com.example.triangle.factory.TriangleFactory;
 import com.example.triangle.factory.TriangleFactoryImpl;
+import com.example.triangle.observer.Observer;
 import com.example.triangle.parser.TriangleStringParser;
 import com.example.triangle.reader.TriangleFileReader;
-import com.example.triangle.service.TriangleAnalysisService;
-import com.example.triangle.service.TriangleCalculationService;
+import com.example.triangle.repository.TriangleRepository; // Используем репозиторий
+import com.example.triangle.service.TriangleTypeService;
+import com.example.triangle.specification.*; // Импортируем спецификации
 import com.example.triangle.type.TriangleType;
+import com.example.triangle.warehouse.TriangleMetrics;
+import com.example.triangle.warehouse.TriangleWarehouse; // Используем хранилище
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 public class Main {
 
     private static final Logger logger = LogManager.getLogger(Main.class);
-    // Rule 12: Use relative path. Place file in 'data' folder in project root.
     private static final String INPUT_FILE_PATH = "data/triangles.txt";
 
     public static void main(String[] args) {
-        logger.info("Triangle application starting...");
+        logger.info("Triangle application starting with Repository and Warehouse...");
 
-        // Instantiate necessary components
+        // --- Получаем Singleton экземпляры ---
+        TriangleRepository repository = TriangleRepository.getInstance();
+        TriangleWarehouse warehouse = TriangleWarehouse.getInstance();
+
+        // --- Регистрируем Warehouse как наблюдателя за Repository ---
+        repository.attach(warehouse);
+        logger.info("Warehouse attached as observer to Repository.");
+
+        // Очистим репозиторий и хранилище на случай повторного запуска в той же JVM (редко, но возможно)
+        repository.clear();
+        warehouse.clearAllMetrics();
+
+
+        // --- Остальные компоненты ---
         TriangleFileReader reader = new TriangleFileReader();
         TriangleStringParser parser = new TriangleStringParser();
-        TriangleFactory factory = new TriangleFactoryImpl(); // Use the interface type
-        TriangleAnalysisService analysisService = new TriangleAnalysisService();
-        TriangleCalculationService calculationService = new TriangleCalculationService(); // Needed for output
+        TriangleFactory factory = new TriangleFactoryImpl(); // Фабрика остается
 
-        List<Triangle> triangles = new ArrayList<>();
         List<String> linesWithError = new ArrayList<>();
+        List<Triangle> createdTriangles = new ArrayList<>(); // Временный список для добавления в репозиторий
 
+        // --- Чтение, парсинг, создание ---
         try {
             List<String> rawLines = reader.readLines(INPUT_FILE_PATH);
             logger.info("Read {} lines from the file.", rawLines.size());
@@ -44,71 +58,120 @@ public class Main {
                 try {
                     List<Double> coordinates = parser.parseCoordinates(line);
                     Triangle triangle = factory.createTriangle(coordinates);
-                    triangles.add(triangle);
+                    createdTriangles.add(triangle); // Сначала собираем, потом добавляем в репозиторий
                 } catch (TriangleException e) {
-                    // Log the error and the line, then continue with the next line
                     logger.error("Skipping line due to error: '{}'. Reason: {}", line, e.getMessage());
                     linesWithError.add(line);
                 }
             }
 
-            logger.info("Successfully created {} triangles.", triangles.size());
+            // --- Добавление созданных треугольников в репозиторий ---
+            // Это вызовет уведомление Warehouse для каждого треугольника
+            repository.addAll(createdTriangles);
+
+            logger.info("Finished processing file. Repository size: {}. Warehouse size: {}", repository.size(), warehouse.size());
             if (!linesWithError.isEmpty()) {
                 logger.warn("Skipped {} lines due to errors.", linesWithError.size());
-                // Optionally print skipped lines: linesWithError.forEach(logger::warn);
             }
 
-            // Perform analysis
-            if (!triangles.isEmpty()) {
-                Map<TriangleType, List<Triangle>> groupedTriangles = analysisService.groupTrianglesByType(triangles);
+            // --- Демонстрация работы ---
+            if (repository.size() > 0) {
+                // 1. Получение всех треугольников
+                System.out.println("\n--- All Triangles in Repository (" + repository.size() + ") ---");
+                repository.getAll().forEach(System.out::println);
 
-                // Output counts
-                System.out.println("\n--- Triangle Counts by Type ---");
-                groupedTriangles.forEach((type, list) ->
-                        System.out.printf("Type: %-15s Count: %d%n", type, list.size())
-                );
+                // 2. Демонстрация Warehouse
+                System.out.println("\n--- Metrics from Warehouse ---");
+                for (Triangle t : repository.getAll()) {
+                    Optional<TriangleMetrics> metricsOpt = warehouse.getMetrics(t.getTriangleId());
+                    metricsOpt.ifPresent(metrics ->
+                            System.out.printf("ID: %d, %s%n", t.getTriangleId(), metrics)
+                    );
+                    if (!metricsOpt.isPresent()) { // Проверка, если вдруг метрики не посчитались
+                        System.out.printf("ID: %d, Metrics not found in Warehouse!%n", t.getTriangleId());
+                    }
+                }
 
-                // Find and output min/max for each group
-                Map<TriangleType, Map<String, Optional<Triangle>>> analysisResults =
-                        analysisService.analyzeTriangleGroups(groupedTriangles);
+                // 3. Демонстрация Спецификаций
+                System.out.println("\n--- Query Examples using Specifications ---");
 
-                System.out.println("\n--- Min/Max Analysis per Group ---");
-                analysisResults.forEach((type, resultsMap) -> {
-                    System.out.println("\nGroup: " + type);
-                    printAnalysisResult("Min Area", resultsMap.get("minArea"), calculationService);
-                    printAnalysisResult("Max Area", resultsMap.get("maxArea"), calculationService);
-                    printAnalysisResult("Min Perimeter", resultsMap.get("minPerimeter"), calculationService);
-                    printAnalysisResult("Max Perimeter", resultsMap.get("maxPerimeter"), calculationService);
+                // Найти по ID (например, первый добавленный, если ID начинаются с 1)
+                long firstId = repository.getAll().get(0).getTriangleId();
+                Specification<Triangle> idSpec = new TriangleIdSpecification(firstId);
+                System.out.println("Query: Find by ID " + firstId);
+                repository.query(idSpec).forEach(System.out::println);
+
+                // Найти все равнобедренные (ISOSCELES)
+                Specification<Triangle> typeSpec = new TriangleTypeSpecification(TriangleType.ISOSCELES);
+                System.out.println("\nQuery: Find ISOSCELES triangles");
+                repository.query(typeSpec).forEach(System.out::println);
+
+                // Найти треугольники с площадью от 5 до 10
+                Specification<Triangle> areaSpec = new AreaRangeSpecification(5.0, 10.0);
+                System.out.println("\nQuery: Find triangles with Area between 5.0 and 10.0");
+                repository.query(areaSpec).forEach(t -> {
+                    Optional<TriangleMetrics> m = warehouse.getMetrics(t.getTriangleId());
+                    System.out.println(t + " " + m.orElse(new TriangleMetrics(Double.NaN, Double.NaN))); // Показать метрики
                 });
 
+                // Найти треугольники в первом квадранте
+                Specification<Triangle> quadrantSpec = new FirstQuadrantSpecification();
+                System.out.println("\nQuery: Find triangles in the First Quadrant");
+                repository.query(quadrantSpec).forEach(System.out::println);
+
+                // Комбинированная спецификация: Прямоугольные ИЛИ Равносторонние
+                Specification<Triangle> rightSpec = new TriangleTypeSpecification(TriangleType.RIGHT_ANGLED);
+                Specification<Triangle> equiSpec = new TriangleTypeSpecification(TriangleType.EQUILATERAL);
+                Specification<Triangle> combinedSpec = rightSpec.or(equiSpec);
+                System.out.println("\nQuery: Find RIGHT_ANGLED or EQUILATERAL triangles");
+                repository.query(combinedSpec).forEach(System.out::println);
+
+
+                // 4. Демонстрация Сортировки
+                System.out.println("\n--- Sorting Examples ---");
+
+                System.out.println("Sorted by ID:");
+                repository.sortById().forEach(t -> System.out.println(" ID: " + t.getTriangleId()));
+
+                System.out.println("\nSorted by Area:");
+                repository.sortByArea().forEach(t -> {
+                    Optional<TriangleMetrics> m = warehouse.getMetrics(t.getTriangleId());
+                    System.out.println(" ID: " + t.getTriangleId() + ", " + m.orElse(new TriangleMetrics(Double.NaN, Double.NaN)));
+                });
+
+                System.out.println("\nSorted by Perimeter:");
+                repository.sortByPerimeter().forEach(t -> {
+                    Optional<TriangleMetrics> m = warehouse.getMetrics(t.getTriangleId());
+                    System.out.println(" ID: " + t.getTriangleId() + ", " + m.orElse(new TriangleMetrics(Double.NaN, Double.NaN)));
+                });
+
+                System.out.println("\nSorted by Point A X-coordinate:");
+                repository.sortByPointACoordinateX().forEach(t -> System.out.println(" ID: " + t.getTriangleId() + ", PointA.X: " + t.getPointA().getX()));
+
+                System.out.println("\nSorted by Type:");
+                repository.sortByType().forEach(t -> {
+                    TriangleType type = new TriangleTypeService().determineType(t); // Переопределяем тип для вывода
+                    System.out.println(" ID: " + t.getTriangleId() + ", Type: " + type);
+                });
+
+
             } else {
-                logger.warn("No valid triangles were created from the file.");
-                System.out.println("No valid triangles found in the input file.");
+                logger.warn("Repository is empty. No operations to demonstrate.");
+                System.out.println("Repository is empty. Cannot demonstrate queries or sorting.");
             }
 
         } catch (TriangleException e) {
-            // Catch exceptions from file reading or other unrecoverable issues
-            logger.fatal("A critical error occurred: {}", e.getMessage(), e);
-            System.err.println("Application failed: " + e.getMessage());
+            logger.fatal("A critical error occurred during file processing: {}", e.getMessage(), e);
+            System.err.println("Application failed during file processing: " + e.getMessage());
         } catch (Exception e) {
-            // Catch unexpected runtime exceptions
             logger.fatal("An unexpected error occurred: {}", e.getMessage(), e);
             System.err.println("An unexpected error occurred: " + e.getMessage());
+        } finally {
+            // Отписываем наблюдателя (хорошая практика, хотя для Singleton не так критично)
+            repository.detach(warehouse);
+            logger.info("Warehouse detached from Repository.");
         }
 
         logger.info("Triangle application finished.");
-    }
-
-    // Helper method for printing analysis results
-    private static void printAnalysisResult(String label, Optional<Triangle> triangleOpt, TriangleCalculationService calcService) {
-        System.out.printf("%-15s: ", label);
-        if (triangleOpt.isPresent()) { // Rule 21: Check boolean directly
-            Triangle t = triangleOpt.get();
-            double area = calcService.calculateArea(t);
-            double perimeter = calcService.calculatePerimeter(t);
-            System.out.printf("Triangle ID %d (Area: %.2f, Perimeter: %.2f)%n", t.getTriangleId(), area, perimeter);
-        } else {
-            System.out.println("N/A (Group might be empty or calculation failed)");
-        }
     }
 }
